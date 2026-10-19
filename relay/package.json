@@ -1,0 +1,7 @@
+{
+  "name": "s7-builds-relay",
+  "private": true,
+  "type": "module",
+  "scripts": { "deploy": "wrangler deploy", "test": "node --test test/*.test.js" },
+  "devDependencies": { "wrangler": "^4" }
+}

@@ -1,0 +1,70 @@
+# Kiểm tra s7-app (Expo): typecheck + lint + test + chặn dòng dài. Thay `ci.yml` cũ trong repo private.
+# Kích bởi Worker `s7-builds-relay` (push main + PR). Chạy tay:
+#   gh workflow run ci-app.yml --repo szen7dev/s7-builds -f sha=<full sha>
+# Kết quả: status `s7-builds/ci` trên commit nguồn.
+name: ci-app
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA ở s7-app"
+        required: true
+        type: string
+      key:
+        description: "Khoá gom run (pr-<số> hoặc main)"
+        required: false
+        default: manual
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-app-${{ inputs.key }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    if: github.repository == 'szen7dev/s7-builds'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      SRC_REPO: szen7dev/s7-app
+      GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Status pending
+        run: |
+          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=pending -f context=s7-builds/ci \
+            -f description="Đang kiểm tra" -f target_url="$RUN_URL" >/dev/null
+
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.sha }}
+          token: ${{ secrets.SRC_TOKEN }}
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: yarn
+      - run: yarn install --frozen-lockfile
+      - run: yarn typecheck
+      - run: yarn lint
+      - run: yarn test --ci
+      # Chặn dòng mã dài bất thường (kiểu mã độc làm rối từng gặp ở repo cũ).
+      - name: Guard long lines
+        run: |
+          if git ls-files '*.js' '*.ts' '*.tsx' '*.json' | grep -v -e '^yarn.lock$' | xargs awk 'length($0) > 1000 { print FILENAME": "FNR; bad=1 } END { exit bad }'; then echo ok; else echo "Có dòng > 1000 ký tự"; exit 1; fi
+
+      - name: Status kết quả
+        if: always()
+        run: |
+          case "${{ job.status }}" in
+            success)   S=success; D="CI xanh" ;;
+            cancelled) S=error;   D="Bị huỷ (có lần chạy mới hơn)" ;;
+            *)         S=failure; D="CI đỏ" ;;
+          esac
+          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=$S -f context=s7-builds/ci \
+            -f description="$D" -f target_url="$RUN_URL" >/dev/null

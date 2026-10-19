@@ -1,0 +1,34 @@
+# Repo này PUBLIC: log run (đường dẫn file, kết quả test của mã private) ai cũng đọc được.
+# - Run XANH: xoá ngay khi xong.
+# - Run ĐỎ/HUỶ: giữ tối đa ~1 ngày để kịp xem lỗi, rồi lượt quét hằng đêm xoá.
+name: cleanup
+
+on:
+  workflow_run:
+    workflows: [build-image, test-be, ci-app]
+    types: [completed]
+  schedule:
+    - cron: '0 17 * * *'   # 00:00 giờ VN
+  workflow_dispatch: {}
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    if: github.repository == 'szen7dev/s7-builds'
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      R: ${{ github.repository }}
+    steps:
+      - name: Xoá run vừa xanh
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'
+        run: gh api -X DELETE "repos/$R/actions/runs/${{ github.event.workflow_run.id }}"
+
+      - name: Quét mọi run đã xong (trừ chính run này)
+        if: github.event_name != 'workflow_run'
+        run: |
+          gh api "repos/$R/actions/runs?status=completed&per_page=100" --paginate \
+            --jq '.workflow_runs[].id' | grep -vx "${{ github.run_id }}" | \
+            xargs -r -I {} gh api -X DELETE "repos/$R/actions/runs/{}"

@@ -1,0 +1,143 @@
+# Kiểm tra s7-be: gate + toàn bộ test (MongoDB replica set riêng) và luật checklist cho PR.
+# Thay cho `test.yml` + `checklist.yml` cũ chạy trong repo private (≈ 4.500 phút tính phí/tuần).
+#
+# Kích bởi Worker `s7-builds-relay`: push main (đổi src/scripts/test/...) và mọi PR mở/cập nhật.
+# Chạy tay:  gh workflow run test-be.yml --repo szen7dev/s7-builds -f sha=<full sha> [-f base=main]
+#
+# Kết quả gửi về commit nguồn: status `s7-builds/test` và `s7-builds/checklist` (chỉ PR).
+name: test-be
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA ở s7-be"
+        required: true
+        type: string
+      base:
+        description: "Nhánh đích của PR (để trống nếu là push) — bật kiểm checklist"
+        required: false
+        default: ""
+        type: string
+      key:
+        description: "Khoá gom run (pr-<số> hoặc main) — run cũ cùng khoá bị huỷ"
+        required: false
+        default: manual
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-be-${{ inputs.key }}
+  cancel-in-progress: true
+
+env:
+  SRC_REPO: szen7dev/s7-be
+  GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  backend:
+    if: github.repository == 'szen7dev/s7-builds'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Status pending
+        run: |
+          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=pending -f context=s7-builds/test \
+            -f description="Đang chạy gate + test" -f target_url="$RUN_URL" >/dev/null
+
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.sha }}
+          token: ${{ secrets.SRC_TOKEN }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare main reference for spec comparison
+        run: git show-ref --verify --quiet refs/heads/main || git branch main origin/main
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Start isolated MongoDB replica set
+        run: |
+          docker run -d --name s7-test-mongo -p 27018:27018 mongo:7 --port 27018 --replSet rs0 --bind_ip_all
+          for attempt in $(seq 1 60); do
+            if docker exec s7-test-mongo mongosh --port 27018 --quiet --eval 'db.runCommand({ping:1}).ok' | grep -q 1; then break; fi
+            sleep 1
+          done
+          docker exec s7-test-mongo mongosh --port 27018 --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27018"}]})'
+          for attempt in $(seq 1 60); do
+            if docker exec s7-test-mongo mongosh --port 27018 --quiet --eval 'db.hello().isWritablePrimary' | grep -q true; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+      - name: Configure isolated test database
+        run: |
+          cat > .env.test <<'ENV'
+          MONGO_URI=mongodb://127.0.0.1:27018/?replicaSet=rs0
+          MONGO_DB=acc_test
+          PORT=4401
+          JWT_SECRET=ci-test-only-6851c90c235eaf2cb6b3b040e3763d8d38a75abfa345a9ad736fa7cd7
+          MAIL_DRIVER=log
+          DOCS_DIR=
+          FE_DIR=
+          SECRET_BOX_KEY=
+          S3_ENDPOINT=https://sgp1.digitaloceanspaces.com
+          S3_REGION=sgp1
+          S3_BUCKET=s7-prod-store-test
+          S3_ACCESS_KEY=test-access-key
+          S3_SECRET_KEY=test-secret-key
+          S3_FORCE_PATH_STYLE=false
+          ENV
+          cp .env.test .env
+      - run: npm run gate
+      - run: npm test
+      - name: MongoDB diagnostics
+        if: failure()
+        run: docker logs --tail 200 s7-test-mongo
+
+      - name: Status kết quả
+        if: always()
+        run: |
+          case "${{ job.status }}" in
+            success)   S=success; D="Gate + test xanh" ;;
+            cancelled) S=error;   D="Bị huỷ (có lần chạy mới hơn)" ;;
+            *)         S=failure; D="Gate/test đỏ" ;;
+          esac
+          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=$S -f context=s7-builds/test \
+            -f description="$D" -f target_url="$RUN_URL" >/dev/null
+
+  checklist:
+    if: github.repository == 'szen7dev/s7-builds' && inputs.base != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ inputs.sha }}
+          token: ${{ secrets.SRC_TOKEN }}
+          fetch-depth: 0   # cần lịch sử để `git diff base...HEAD`
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - name: Cấu trúc checklist + mục Việc đang mở đã đồng bộ
+        run: node scripts/check-cli-checklist.mjs
+      - name: Nhánh đổi tệp thì phải đổi checklist
+        run: node scripts/check-cli-checklist.mjs --require-change="origin/${{ inputs.base }}"
+
+      - name: Status kết quả
+        if: always()
+        run: |
+          case "${{ job.status }}" in
+            success)   S=success; D="Checklist đạt" ;;
+            cancelled) S=error;   D="Bị huỷ" ;;
+            *)         S=failure; D="Checklist chưa đạt" ;;
+          esac
+          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=$S -f context=s7-builds/checklist \
+            -f description="$D" -f target_url="$RUN_URL" >/dev/null

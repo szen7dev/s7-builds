@@ -1,6 +1,9 @@
-# Repo này PUBLIC: log run (đường dẫn file, kết quả test của mã private) ai cũng đọc được.
+# Repo này PUBLIC: log run ai cũng đọc được. Lớp chặn CHÍNH là không in mã private ra log
+# (`ci/lib.sh` — chỉ dòng ✔/✖, chi tiết vào status commit private + artifact MÃ HOÁ); dọn run ở đây
+# là lớp phụ để không tích tụ.
 # - Run XANH: xoá ngay khi xong.
-# - Run ĐỎ/HUỶ: giữ tối đa ~1 ngày để kịp xem lỗi, rồi lượt quét hằng đêm xoá.
+# - Run ĐỎ/HUỶ: giữ tối đa ~1 ngày (artifact log mã hoá cũng hết hạn sau 1 ngày) để kịp xem lỗi
+#   bằng `scripts/xem-log.sh <run_id>`, rồi lượt quét hằng đêm xoá.
 name: cleanup
 
 on:

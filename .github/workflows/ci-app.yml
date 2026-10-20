@@ -1,7 +1,10 @@
 # Kiểm tra s7-app (Expo): typecheck + lint + test + chặn dòng dài. Thay `ci.yml` cũ trong repo private.
 # Kích bởi Worker `s7-builds-relay` (push main + PR). Chạy tay:
 #   gh workflow run ci-app.yml --repo szen7dev/s7-builds -f sha=<full sha>
-# Kết quả: status `s7-builds/ci` trên commit nguồn.
+# Kết quả: status `s7-builds/ci` trên commit nguồn, kèm `s7-builds/secrets` (gitleaks, không chặn).
+#
+# ⚠️ Repo PUBLIC — output typecheck/lint/test (trích mã private) KHÔNG in ra log: xem `ci/lib.sh`.
+# SRC_TOKEN chỉ cấp cho checkout + status — `yarn install` không đọc được.
 name: ci-app
 
 on:
@@ -31,40 +34,71 @@ jobs:
     timeout-minutes: 20
     env:
       SRC_REPO: szen7dev/s7-app
-      GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+      SRC_SHA: ${{ inputs.sha }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Status pending
-        run: |
-          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=pending -f context=s7-builds/ci \
-            -f description="Đang kiểm tra" -f target_url="$RUN_URL" >/dev/null
+      - name: Nạp ci/lib.sh
+        run: curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
 
-      - uses: actions/checkout@v5
+      - name: Status pending
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+        run: . "$RUNNER_TEMP/lib.sh" && status "$SRC_REPO" "$SRC_SHA" s7-builds/ci pending "Đang kiểm tra" "$RUN_URL"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ inputs.sha }}
           token: ${{ secrets.SRC_TOKEN }}
           persist-credentials: false
-      - uses: actions/setup-node@v5
+          show-progress: false
+
+      - name: Quét bí mật (gitleaks)
+        run: . "$RUNNER_TEMP/lib.sh" && gitleaks_scan .
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: 22
           cache: yarn
-      - run: yarn install --frozen-lockfile
-      - run: yarn typecheck
-      - run: yarn lint
-      - run: yarn test --ci
-      # Chặn dòng mã dài bất thường (kiểu mã độc làm rối từng gặp ở repo cũ).
-      - name: Guard long lines
+
+      - name: Cài đặt + typecheck + lint + test
         run: |
-          if git ls-files '*.js' '*.ts' '*.tsx' '*.json' | grep -v -e '^yarn.lock$' | xargs awk 'length($0) > 1000 { print FILENAME": "FNR; bad=1 } END { exit bad }'; then echo ok; else echo "Có dòng > 1000 ký tự"; exit 1; fi
+          . "$RUNNER_TEMP/lib.sh"
+          quiet install yarn install --frozen-lockfile || { set_desc "yarn install lỗi"; exit 1; }
+          FAIL=""
+          quiet typecheck yarn typecheck || FAIL="$FAIL typecheck"
+          quiet lint yarn lint || FAIL="$FAIL lint"
+          quiet test yarn test --ci || FAIL="$FAIL test"
+          # Chặn dòng mã dài bất thường (kiểu mã độc làm rối từng gặp ở repo cũ).
+          if ! git ls-files '*.js' '*.ts' '*.tsx' '*.json' | grep -v -e '^yarn.lock$' \
+              | xargs awk 'length($0) > 1000 { print FILENAME": "FNR; bad=1 } END { exit bad }' > "$LOGDIR/long-lines.log"; then
+            echo "✖ long-lines"; FAIL="$FAIL dòng>1000:$(head -3 "$LOGDIR/long-lines.log" | paste -sd, -)"
+          else echo "✔ long-lines"; fi
+          T=$(grep -E '^Tests:' "$LOGDIR/test.log" | tail -1)
+          [ -n "$T" ] && echo "test — $T"
+          if [ -n "$FAIL" ]; then set_desc "CI đỏ:$FAIL${T:+ · $T}"; exit 1; fi
+          set_desc "CI xanh${T:+ · $T}"
+
+      - name: Đóng gói log (mã hoá)
+        if: failure()
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: . "$RUNNER_TEMP/lib.sh" && pack_logs
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: logs-encrypted
+          path: ${{ runner.temp }}/logs.enc
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Status kết quả
         if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
         run: |
-          case "${{ job.status }}" in
-            success)   S=success; D="CI xanh" ;;
-            cancelled) S=error;   D="Bị huỷ (có lần chạy mới hơn)" ;;
-            *)         S=failure; D="CI đỏ" ;;
-          esac
-          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=$S -f context=s7-builds/ci \
-            -f description="$D" -f target_url="$RUN_URL" >/dev/null
+          . "$RUNNER_TEMP/lib.sh"
+          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ (có lần chạy mới hơn)"
+          status "$SRC_REPO" "$SRC_SHA" s7-builds/ci "$(job_state "${{ job.status }}")" "CI đỏ" "$RUN_URL"
+          [ -f "$RUNNER_TEMP/gitleaks-count" ] && gitleaks_status "$SRC_REPO" "$SRC_SHA" "$RUN_URL" || true

@@ -36,8 +36,11 @@ status() {
 job_state() { case "$1" in success) echo success ;; cancelled) echo error ;; *) echo failure ;; esac; }
 
 # gitleaks_scan <thư mục> — quét cây mã HIỆN TẠI (không quét lịch sử), `--redact` để báo cáo không
-# chứa giá trị bí mật. Ghi số phát hiện vào $RUNNER_TEMP/gitleaks-count, danh sách file:dòng vào
-# $RUNNER_TEMP/gitleaks-where. Không bao giờ làm đỏ job — chỉ báo qua status riêng.
+# chứa giá trị bí mật. Không bao giờ làm đỏ job — chỉ báo qua status riêng. Ghi ra $RUNNER_TEMP:
+#   gitleaks-count (tổng) · gitleaks-real (số NGOÀI thư mục/tệp test) · gitleaks-where (file:dòng
+#   ngoài test). Phát hiện trong test là dữ liệu giả của phép thử (s7-be có 13 mẫu kiểu
+#   `password: 'mat-khau-hop-le-2026'`) — không làm đỏ status, tránh ❌ thường trực khiến cảnh báo
+#   thật bị lờ đi.
 GITLEAKS_VERSION=8.30.1
 GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 gitleaks_scan() {
@@ -47,21 +50,27 @@ gitleaks_scan() {
   tar -xzf "$tgz" -C "$RUNNER_TEMP" gitleaks
   quiet gitleaks "$RUNNER_TEMP/gitleaks" dir "$dir" --redact --no-banner --no-color \
     --report-format json --report-path "$report" --exit-code 0 || true
+  local not_test='[.[] | select(.File | test("(^|/)(test|tests|__tests__|__mocks__|fixtures)/|\\.(test|spec)\\.[cm]?[jt]sx?$") | not)]'
   jq 'length' "$report" >"$RUNNER_TEMP/gitleaks-count" 2>/dev/null || echo "?" >"$RUNNER_TEMP/gitleaks-count"
-  jq -r '[.[] | "\(.File | ltrimstr("./")):\(.StartLine)"] | unique | join(", ")' "$report" \
+  jq "$not_test | length" "$report" >"$RUNNER_TEMP/gitleaks-real" 2>/dev/null || echo "?" >"$RUNNER_TEMP/gitleaks-real"
+  jq -r "$not_test | [.[] | \"\\(.File | ltrimstr(\"./\")):\\(.StartLine)\"] | unique | join(\", \")" "$report" \
     >"$RUNNER_TEMP/gitleaks-where" 2>/dev/null || true
-  echo "gitleaks: $(cat "$RUNNER_TEMP/gitleaks-count") phát hiện"
+  echo "gitleaks: $(cat "$RUNNER_TEMP/gitleaks-count") phát hiện, $(cat "$RUNNER_TEMP/gitleaks-real") ngoài test"
 }
 
 # gitleaks_status <repo> <sha> <target_url> — gửi status `s7-builds/secrets`. Cần GH_TOKEN.
 gitleaks_status() {
-  local n; n="$(cat "$RUNNER_TEMP/gitleaks-count" 2>/dev/null || echo "?")"
-  if [ "$n" = 0 ]; then
+  local n real
+  n="$(cat "$RUNNER_TEMP/gitleaks-count" 2>/dev/null || echo "?")"
+  real="$(cat "$RUNNER_TEMP/gitleaks-real" 2>/dev/null || echo "?")"
+  if [ "$real" = 0 ]; then
+    local d="gitleaks: không thấy bí mật trong mã"
+    [ "$n" != 0 ] && d="gitleaks: không có ngoài test ($n mẫu dữ liệu giả trong test)"
     gh api "repos/$1/statuses/$2" -f state=success -f context=s7-builds/secrets \
-      -f description="gitleaks: không thấy bí mật trong mã" -f target_url="$3" >/dev/null
+      -f description="$d" -f target_url="$3" >/dev/null
   else
     gh api "repos/$1/statuses/$2" -f state=failure -f context=s7-builds/secrets \
-      -f description="$(printf 'gitleaks %s: %s' "$n" "$(cat "$RUNNER_TEMP/gitleaks-where" 2>/dev/null)" | cut -c1-140)" \
+      -f description="$(printf 'gitleaks %s ngoài test: %s' "$real" "$(cat "$RUNNER_TEMP/gitleaks-where" 2>/dev/null)" | cut -c1-140)" \
       -f target_url="$3" >/dev/null
   fi
 }

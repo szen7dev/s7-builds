@@ -48,6 +48,8 @@ PAT có hạn — hết hạn thì mọi commit hiện status ❌ "Không kích 
 - Không ghi bất kỳ chuỗi giống khoá nào vào file (JWT test sinh ngẫu nhiên mỗi run).
 - `gitleaks` (`--redact`) quét cây mã be/fe (build-image) và app (ci-app) → status `s7-builds/secrets`,
   **không chặn** build/deploy. Chỉ ra số lượng ở log công khai; file:dòng ở status commit private.
+  Phát hiện chỉ nằm trong `test/`, `*.test.*`, `fixtures/`… (dữ liệu giả của phép thử) ⇒ status vẫn xanh,
+  mô tả ghi số mẫu; có phát hiện NGOÀI test mới đỏ.
 
 ## Xem log đầy đủ của run đỏ
 ```bash

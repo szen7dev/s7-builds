@@ -8,7 +8,12 @@
 # `prod-s7-01-kustomize-apps` (repo s7-kubernetes-prod) — phía GitOps không phải sửa gì.
 #
 # Kết quả gửi ngược về commit nguồn thành status `s7-builds/image` — push main mà ảnh không ra
-# thì commit hiện ❌ chứ không im lặng như dispatch kiểu cũ.
+# thì commit hiện ❌ chứ không im lặng như dispatch kiểu cũ. Kèm status `s7-builds/secrets` (gitleaks
+# quét cây mã, KHÔNG chặn deploy).
+#
+# ⚠️ Repo PUBLIC — log build (Dockerfile, lỗi biên dịch có trích mã nguồn) KHÔNG in ra: xem `ci/lib.sh`.
+# Token đọc repo nguồn (SRC_TOKEN) chỉ cấp cho bước checkout + bước gửi status, không lộ cho
+# docker build hay action bên thứ ba. Action bên thứ ba ghim theo SHA.
 name: build-image
 
 on:
@@ -45,60 +50,78 @@ jobs:
     timeout-minutes: 30
     env:
       SRC_REPO: szen7dev/s7-${{ inputs.app }}
+      SRC_SHA: ${{ inputs.sha }}
       IMAGE: ghcr.io/szen7dev/s7-${{ inputs.app }}
-      GH_TOKEN: ${{ secrets.SRC_TOKEN }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - name: Status pending
-        run: |
-          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=pending -f context=s7-builds/image \
-            -f description="Đang dựng ảnh" -f target_url="$RUN_URL" >/dev/null
+      - name: Nạp ci/lib.sh
+        run: curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
 
-      - uses: actions/checkout@v5
+      - name: Status pending
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+        run: . "$RUNNER_TEMP/lib.sh" && status "$SRC_REPO" "$SRC_SHA" s7-builds/image pending "Đang dựng ảnh" "$RUN_URL"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ inputs.sha }}
           token: ${{ secrets.SRC_TOKEN }}
           persist-credentials: false
+          show-progress: false
+
+      - name: Quét bí mật (gitleaks)
+        run: . "$RUNNER_TEMP/lib.sh" && gitleaks_scan .
 
       - id: meta
         run: |
-          TAG="${{ inputs.ref_name }}-${{ github.run_id }}-${GITHUB_SHA_SRC::7}"
+          TAG="${{ inputs.ref_name }}-${{ github.run_id }}-${SRC_SHA::7}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          {
-            echo "tags<<EOF"
-            echo "$IMAGE:$TAG"
-            if [ "${{ inputs.ref_name }}" = "main" ]; then echo "$IMAGE:latest"; fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-        env:
-          GITHUB_SHA_SRC: ${{ inputs.sha }}
+          echo "$TAG" > "$RUNNER_TEMP/image-tag"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Gọi thẳng `docker buildx build` (không qua build-push-action) để: output vào file riêng tư,
+      # không có bản ghi build/summary tự đính kèm run công khai.
       # Cache để ở ghcr (package PRIVATE), KHÔNG dùng `type=gha`: cache Actions của repo public có thể bị
       # workflow từ PR fork đọc lại — mà lớp cache chứa mã nguồn private.
-      - uses: docker/build-push-action@v6
+      - name: Dựng + đẩy ảnh
+        run: |
+          . "$RUNNER_TEMP/lib.sh"
+          TAGS=(-t "$IMAGE:${{ steps.meta.outputs.tag }}")
+          if [ "${{ inputs.ref_name }}" = "main" ]; then TAGS+=(-t "$IMAGE:latest"); fi
+          quiet docker-build docker buildx build . --push --progress=plain "${TAGS[@]}" \
+            --cache-from "type=registry,ref=$IMAGE:buildcache" \
+            --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
+            || { set_desc "Dựng ảnh lỗi — log mã hoá trong artifact của run"; exit 1; }
+          set_desc "Đã đẩy ${{ steps.meta.outputs.tag }}"
+
+      - name: Đóng gói log (mã hoá)
+        if: failure()
+        env:
+          LOG_KEY: ${{ secrets.LOG_KEY }}
+        run: . "$RUNNER_TEMP/lib.sh" && pack_logs
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          name: logs-encrypted
+          path: ${{ runner.temp }}/logs.enc
+          retention-days: 1
+          if-no-files-found: ignore
 
       - name: Status kết quả
         if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
         run: |
-          case "${{ job.status }}" in
-            success)   S=success; D="Đã đẩy ${{ steps.meta.outputs.tag }}" ;;
-            cancelled) S=error;   D="Bị huỷ" ;;
-            *)         S=failure; D="Dựng ảnh lỗi" ;;
-          esac
-          gh api "repos/$SRC_REPO/statuses/${{ inputs.sha }}" -f state=$S -f context=s7-builds/image \
-            -f description="$D" -f target_url="$RUN_URL" >/dev/null
+          . "$RUNNER_TEMP/lib.sh"
+          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ"
+          status "$SRC_REPO" "$SRC_SHA" s7-builds/image "$(job_state "${{ job.status }}")" "Dựng ảnh lỗi" "$RUN_URL"
+          [ -f "$RUNNER_TEMP/gitleaks-count" ] && gitleaks_status "$SRC_REPO" "$SRC_SHA" "$RUN_URL" || true

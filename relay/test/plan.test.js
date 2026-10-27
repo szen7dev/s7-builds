@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import worker, { plan } from '../src/index.js';
+import worker, { plan, compareFiles } from '../src/index.js';
 import { createHmac } from 'node:crypto';
 
 const push = (repo, files, extra = {}) => ({
@@ -67,4 +67,19 @@ test('chữ ký sai → 401, đúng (ping) → 200', async () => {
   const mk = (s) => new Request('https://x/', { method: 'POST', body, headers: { 'x-github-event': 'ping', 'x-hub-signature-256': s } });
   assert.equal((await worker.fetch(mk('sha256=' + '0'.repeat(64)), env)).status, 401);
   assert.equal((await worker.fetch(mk(sig), env)).status, 200);
+});
+
+test('gộp main vào nhánh: payload có workers/stt nhưng compare chỉ src ⇒ không dựng stt', () => {
+  const p = push('s7-be', ['workers/stt/worker.py', 'src/a.js']);
+  assert.ok(names(plan('push', p)).includes('build-image.yml:stt'));
+  assert.deepEqual(names(plan('push', p, ['src/a.js'])), ['build-image.yml:be', 'test-be.yml:']);
+});
+test('compareFiles: lấy tên tệp; ≥300 tệp ⇒ null; lỗi ⇒ undefined', async () => {
+  const p = { ref: 'refs/heads/main', before: 'b'.repeat(40), after: 'a'.repeat(40), repository: { full_name: 'szen7dev/s7-be' } };
+  const ok = (files) => async () => ({ ok: true, json: async () => ({ files }) });
+  assert.deepEqual(await compareFiles({}, p, ok([{ filename: 'src/a.js' }])), ['src/a.js']);
+  assert.equal(await compareFiles({}, p, ok(Array.from({ length: 300 }, (_, i) => ({ filename: `f${i}` })))), null);
+  assert.equal(await compareFiles({}, p, async () => ({ ok: false })), undefined);
+  assert.equal(await compareFiles({}, p, async () => { throw new Error('x'); }), undefined);
+  assert.equal(await compareFiles({}, { ...p, before: '0'.repeat(40) }, ok([])), undefined);
 });

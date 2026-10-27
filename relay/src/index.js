@@ -14,6 +14,8 @@ const BUILDS_REPO = `${OWNER}/s7-builds`;
 // Bộ lọc paths chép từ `build.yml`/`test.yml` cũ của từng repo — đổi ở đây nếu Dockerfile COPY thêm thư mục.
 const BE_IMAGE_PATHS = ['src/', 'scripts/', 'public/', 'templates/', 'integrations/', 'package.json', 'package-lock.json', 'Dockerfile'];
 const BE_TEST_PATHS = ['src/', 'scripts/', 'test/', 'package.json', 'package-lock.json'];
+// Worker Giọng nói → Văn bản (BR-07-155): ảnh RIÊNG ghcr.io/szen7dev/s7-stt dựng từ s7-be/workers/stt — ảnh API không COPY thư mục này.
+const STT_IMAGE_PATHS = ['workers/stt/'];
 const FE_IMAGE_PATHS = ['src/', 'public/', 'index.html', 'package.json', 'package-lock.json', 'vite.config.ts', 'nginx.conf', 'Dockerfile'];
 
 const PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review']);
@@ -53,6 +55,7 @@ export function plan(event, p) {
 
     if (repoName === 's7-be') {
       if (touches(BE_IMAGE_PATHS)) jobs.push({ workflow: 'build-image.yml', repo: repoName, sha, context: 's7-builds/image', inputs: { app: 'be', sha, ref_name: 'main' } });
+      if (touches(STT_IMAGE_PATHS)) jobs.push({ workflow: 'build-image.yml', repo: repoName, sha, context: 's7-builds/image-stt', inputs: { app: 'stt', sha, ref_name: 'main' } });
       if (touches(BE_TEST_PATHS)) jobs.push({ workflow: 'test-be.yml', repo: repoName, sha, context: 's7-builds/test', inputs: { sha, key: 'main' } });
     } else if (repoName === 's7-fe') {
       if (touches(FE_IMAGE_PATHS)) jobs.push({ workflow: 'build-image.yml', repo: repoName, sha, context: 's7-builds/image', inputs: { app: 'fe', sha, ref_name: 'main' } });

@@ -1,4 +1,7 @@
-# Dựng ảnh Docker cho s7-be / s7-fe rồi đẩy lên ghcr.
+# Dựng ảnh Docker cho s7-be / s7-fe / s7-stt rồi đẩy lên ghcr.
+#
+# `stt` = worker Giọng nói → Văn bản (Python + faster-whisper, BR-07-155): mã ở `s7-be/workers/stt/`, ảnh RIÊNG
+# `ghcr.io/szen7dev/s7-stt`, status riêng `s7-builds/image-stt` (không đè status ảnh API trên cùng commit).
 #
 # Kích bởi Worker `s7-builds-relay` (webhook push main của repo nguồn) — hoặc chạy tay khi cần:
 #   gh workflow run build-image.yml --repo szen7dev/s7-builds -f app=be -f sha=<full sha>
@@ -20,10 +23,10 @@ on:
   workflow_dispatch:
     inputs:
       app:
-        description: "be | fe"
+        description: "be | fe | stt"
         required: true
         type: choice
-        options: [be, fe]
+        options: [be, fe, stt]
       sha:
         description: "Full commit SHA ở repo nguồn"
         required: true
@@ -47,11 +50,14 @@ jobs:
     # Chặn fork: repo public, chỉ chạy đúng repo gốc.
     if: github.repository == 'szen7dev/s7-builds'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45  # stt tải sẵn mô hình Whisper ~1,6 GB vào ảnh
     env:
-      SRC_REPO: szen7dev/s7-${{ inputs.app }}
+      # stt nằm trong repo s7-be (thư mục workers/stt) ⇒ checkout s7-be, dựng từ thư mục con.
+      SRC_REPO: szen7dev/s7-${{ inputs.app == 'stt' && 'be' || inputs.app }}
       SRC_SHA: ${{ inputs.sha }}
       IMAGE: ghcr.io/szen7dev/s7-${{ inputs.app }}
+      BUILD_CTX: ${{ inputs.app == 'stt' && 'workers/stt' || '.' }}
+      STATUS_CTX: ${{ inputs.app == 'stt' && 's7-builds/image-stt' || 's7-builds/image' }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Nạp ci/lib.sh
@@ -60,7 +66,7 @@ jobs:
       - name: Status pending
         env:
           GH_TOKEN: ${{ secrets.SRC_TOKEN }}
-        run: . "$RUNNER_TEMP/lib.sh" && status "$SRC_REPO" "$SRC_SHA" s7-builds/image pending "Đang dựng ảnh" "$RUN_URL"
+        run: . "$RUNNER_TEMP/lib.sh" && status "$SRC_REPO" "$SRC_SHA" "$STATUS_CTX" pending "Đang dựng ảnh" "$RUN_URL"
 
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -96,7 +102,7 @@ jobs:
           . "$RUNNER_TEMP/lib.sh"
           TAGS=(-t "$IMAGE:${{ steps.meta.outputs.tag }}")
           if [ "${{ inputs.ref_name }}" = "main" ]; then TAGS+=(-t "$IMAGE:latest"); fi
-          quiet docker-build docker buildx build . --push --progress=plain "${TAGS[@]}" \
+          quiet docker-build docker buildx build "$BUILD_CTX" --push --progress=plain "${TAGS[@]}" \
             --cache-from "type=registry,ref=$IMAGE:buildcache" \
             --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
             || { set_desc "Dựng ảnh lỗi — log mã hoá trong artifact của run"; exit 1; }
@@ -123,5 +129,5 @@ jobs:
         run: |
           . "$RUNNER_TEMP/lib.sh"
           [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ"
-          status "$SRC_REPO" "$SRC_SHA" s7-builds/image "$(job_state "${{ job.status }}")" "Dựng ảnh lỗi" "$RUN_URL"
+          status "$SRC_REPO" "$SRC_SHA" "$STATUS_CTX" "$(job_state "${{ job.status }}")" "Dựng ảnh lỗi" "$RUN_URL"
           [ -f "$RUNNER_TEMP/gitleaks-count" ] && gitleaks_status "$SRC_REPO" "$SRC_SHA" "$RUN_URL" || true

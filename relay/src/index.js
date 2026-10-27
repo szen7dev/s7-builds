@@ -33,7 +33,11 @@ export default {
     const payload = JSON.parse(body);
     if (event === 'ping') return json({ ok: true, zen: payload.zen });
 
-    const jobs = plan(event, payload);
+    // Tệp đổi THẬT của lần push = so `before...after` (API compare). Danh sách tệp theo từng commit trong payload
+    // tính cả commit "gộp main vào nhánh" ⇒ PR không đụng `workers/stt/` vẫn kích dựng lại ảnh stt (2026-10-27: dựng
+    // thừa + rollout worker giết lượt chép lời đang chạy). Lỗi API ⇒ quay về danh sách theo commit như cũ.
+    const files = event === 'push' ? await compareFiles(env, payload) : undefined;
+    const jobs = plan(event, payload, files);
     const results = [];
     for (const job of jobs) results.push(await dispatch(env, job));
     // GitHub ghi lại thân trả lời ở mục "Recent Deliveries" của webhook — xem ở đó khi cần soi.
@@ -43,14 +47,14 @@ export default {
 };
 
 // Quyết định chạy gì cho một sự kiện. Trả về danh sách { workflow, inputs, repo, sha, context }.
-export function plan(event, p) {
+export function plan(event, p, files = undefined) {
   const repoName = p.repository?.name;
   const jobs = [];
 
   if (event === 'push') {
     if (p.ref !== 'refs/heads/main' || p.deleted || /^0+$/.test(p.after || '')) return jobs;
     const sha = p.after;
-    const files = changedFiles(p);
+    if (files === undefined) files = changedFiles(p);
     const touches = (paths) => files === null || files.some((f) => paths.some((x) => (x.endsWith('/') ? f.startsWith(x) : f === x)));
 
     if (repoName === 's7-be') {
@@ -89,6 +93,29 @@ function changedFiles(p) {
   const files = new Set();
   for (const c of commits) for (const f of [...(c.added || []), ...(c.modified || []), ...(c.removed || [])]) files.add(f);
   return [...files];
+}
+
+// Tệp đổi giữa `before` và `after` của lần push. undefined = không lấy được (dùng payload); null = không chắc
+// (push đầu tiên của nhánh, hoặc API cắt ở 300 tệp) ⇒ coi như đổi tất cả.
+export async function compareFiles(env, p, fetchImpl = fetch) {
+  const repo = p.repository?.full_name;
+  if (!repo || !p.before || !p.after || /^0+$/.test(p.before) || p.ref !== 'refs/heads/main') return undefined;
+  try {
+    const res = await fetchImpl(`https://api.github.com/repos/${repo}/compare/${p.before}...${p.after}?per_page=300`, {
+      headers: {
+        authorization: `Bearer ${env.GH_TOKEN}`,
+        accept: 'application/vnd.github+json',
+        'x-github-api-version': '2022-11-28',
+        'user-agent': 's7-builds-relay',
+      },
+    });
+    if (!res.ok) return undefined;
+    const data = await res.json();
+    const files = (data.files || []).map((f) => f.filename);
+    return files.length >= 300 ? null : files;
+  } catch {
+    return undefined;
+  }
 }
 
 async function dispatch(env, job) {

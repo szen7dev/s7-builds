@@ -18,6 +18,14 @@ test('BE push chỉ đổi test → chỉ test, không build', () => {
 test('BE push chỉ đổi templates → build, không test', () => {
   assert.deepEqual(names(plan('push', push('s7-be', ['templates/cdc_grow.xlsx']))), ['build-image.yml:be']);
 });
+test('BE push chỉ đổi workers/stt → chỉ dựng ảnh stt, status riêng', () => {
+  const jobs = plan('push', push('s7-be', ['workers/stt/worker.py']));
+  assert.deepEqual(names(jobs), ['build-image.yml:stt']);
+  assert.equal(jobs[0].context, 's7-builds/image-stt');
+});
+test('BE push đổi src → không dựng ảnh stt', () => {
+  assert.ok(!names(plan('push', push('s7-be', ['src/a.js']))).includes('build-image.yml:stt'));
+});
 test('BE push chỉ đổi docs → không gì', () => {
   assert.deepEqual(plan('push', push('s7-be', ['docs/x.md'])), []);
 });
@@ -32,7 +40,7 @@ test('push xoá nhánh → bỏ qua', () => {
 });
 test('force push / không có commits → coi như đổi hết', () => {
   assert.deepEqual(names(plan('push', push('s7-fe', [], { commits: [] }))), ['build-image.yml:fe']);
-  assert.deepEqual(names(plan('push', push('s7-be', ['docs/x.md'], { forced: true }))), ['build-image.yml:be', 'test-be.yml:']);
+  assert.deepEqual(names(plan('push', push('s7-be', ['docs/x.md'], { forced: true }))), ['build-image.yml:be', 'build-image.yml:stt', 'test-be.yml:']);
 });
 test('app push → ci', () => {
   assert.deepEqual(names(plan('push', push('s7-app', ['README.md']))), ['ci-app.yml:']);

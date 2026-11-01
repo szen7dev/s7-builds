@@ -8,7 +8,8 @@ push/PR ở repo nguồn ──webhook──► Cloudflare Worker `s7-builds-rel
         kiểm chữ ký HMAC, lọc nhánh main + paths ──► status "pending" trên commit + workflow_dispatch
 s7-builds: build-image (be|fe) → ghcr.io/szen7dev/s7-<app>:main-<run_id>-<sha7>
            test-be (gate + test + checklist PR) · ci-app (typecheck/lint/test)
-           ──► status s7-builds/{image,test,checklist,ci,secrets} gửi về đúng commit nguồn
+           checklist-index (s7-be: sinh lại docs/CHECKLIST-TONG-QUAN.md từ docs/checklist/ sau khi gộp main)
+           ──► status s7-builds/{image,test,checklist,checklist-index,ci,secrets} gửi về đúng commit nguồn
 ImageUpdater (s7-kubernetes-prod) nhận tag mới → ArgoCD rollout — phía GitOps không đổi gì.
 cleanup: xoá run xanh ngay, run đỏ/huỷ xoá lúc 00:00 (lớp phụ — log đã không chứa mã private).
 ```
@@ -19,6 +20,7 @@ cleanup: xoá run xanh ngay, run đỏ/huỷ xoá lúc 00:00 (lớp phụ — lo
 gh workflow run build-image.yml --repo szen7dev/s7-builds -f app=be -f sha=<full sha>
 gh workflow run test-be.yml     --repo szen7dev/s7-builds -f sha=<full sha> [-f base=main]
 gh workflow run ci-app.yml      --repo szen7dev/s7-builds -f sha=<full sha>
+gh workflow run checklist-index.yml --repo szen7dev/s7-builds -f sha=<full sha main s7-be>
 ```
 
 ## Bí mật
@@ -26,6 +28,7 @@ gh workflow run ci-app.yml      --repo szen7dev/s7-builds -f sha=<full sha>
 | Ở đâu | Tên | Là gì |
 |---|---|---|
 | s7-builds (Actions secret) | `SRC_TOKEN` | fine-grained PAT: Contents R + Commit statuses RW trên s7-be/s7-fe/s7-app, Actions RW trên s7-builds |
+| s7-builds (Actions secret) | `CHECKLIST_TOKEN` | fine-grained PAT **riêng**: CHỈ Contents **RW** trên s7-be — `checklist-index.yml` đẩy commit bảng tổng lên main. Tách khỏi `SRC_TOKEN` để token dùng trong job chạy `npm ci` vẫn chỉ đọc |
 | s7-builds (Actions secret) | `LOG_KEY` | khoá mã hoá log đầy đủ của run đỏ (artifact `logs-encrypted`); bản sao ở máy dev `~/.s7-builds-logkey` |
 | Worker | `GH_TOKEN` | cùng PAT trên |
 | Worker + webhook 3 repo nguồn | `WEBHOOK_SECRET` | chuỗi ký webhook |

@@ -29,6 +29,24 @@ test('BE push đổi src → không dựng ảnh stt', () => {
 test('BE push chỉ đổi docs → không gì', () => {
   assert.deepEqual(plan('push', push('s7-be', ['docs/x.md'])), []);
 });
+test('BE push đổi mảnh docs/checklist/ → sinh lại bảng tổng (chỉ việc đó)', () => {
+  const jobs = plan('push', push('s7-be', ['docs/checklist/CLI-20261101-6d2aa4a6.md']));
+  assert.deepEqual(names(jobs), ['checklist-index.yml:']);
+  assert.equal(jobs[0].context, 's7-builds/checklist-index');
+});
+test('BE push sửa thẳng bảng tổng (PR kiểu cũ) → vẫn sinh lại để nhận nuôi dòng', () => {
+  assert.deepEqual(names(plan('push', push('s7-be', ['docs/CHECKLIST-TONG-QUAN.md']))), ['checklist-index.yml:']);
+});
+test('commit của chính bot sinh bảng → KHÔNG tự kích lại', () => {
+  const p = push('s7-be', ['docs/CHECKLIST-TONG-QUAN.md'], { head_commit: { message: 'docs(checklist): sinh lại bảng tổng [checklist-bot]' } });
+  assert.deepEqual(plan('push', p), []);
+});
+test('BE push đổi src + mảnh → build + test + sinh bảng', () => {
+  assert.deepEqual(names(plan('push', push('s7-be', ['src/a.js', 'docs/checklist/CLI-20261101-6d2aa4a6.md']))), ['build-image.yml:be', 'checklist-index.yml:', 'test-be.yml:']);
+});
+test('FE push đổi docs/checklist/ (không có ở FE) → không sinh bảng', () => {
+  assert.deepEqual(plan('push', push('s7-fe', ['docs/checklist/x.md'])), []);
+});
 test('FE push đổi src → build fe', () => {
   assert.deepEqual(names(plan('push', push('s7-fe', ['src/App.tsx']))), ['build-image.yml:fe']);
 });
@@ -40,7 +58,7 @@ test('push xoá nhánh → bỏ qua', () => {
 });
 test('force push / không có commits → coi như đổi hết', () => {
   assert.deepEqual(names(plan('push', push('s7-fe', [], { commits: [] }))), ['build-image.yml:fe']);
-  assert.deepEqual(names(plan('push', push('s7-be', ['docs/x.md'], { forced: true }))), ['build-image.yml:be', 'build-image.yml:stt', 'test-be.yml:']);
+  assert.deepEqual(names(plan('push', push('s7-be', ['docs/x.md'], { forced: true }))), ['build-image.yml:be', 'build-image.yml:stt', 'checklist-index.yml:', 'test-be.yml:']);
 });
 test('app push → ci', () => {
   assert.deepEqual(names(plan('push', push('s7-app', ['README.md']))), ['ci-app.yml:']);

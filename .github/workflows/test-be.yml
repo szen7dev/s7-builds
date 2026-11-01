@@ -199,9 +199,9 @@ jobs:
         run: |
           . "$RUNNER_TEMP/lib.sh"
           quiet checklist-cau-truc node scripts/check-cli-checklist.mjs \
-            || { set_desc "Checklist sai cấu trúc hoặc mục Việc đang mở chưa đồng bộ"; exit 1; }
+            || { set_desc "Mảnh checklist (docs/checklist/) sai khuôn"; exit 1; }
           quiet checklist-doi-file node scripts/check-cli-checklist.mjs --require-change="origin/$BASE" \
-            || { set_desc "Nhánh đổi tệp nhưng không đổi docs/CHECKLIST-TONG-QUAN.md"; exit 1; }
+            || { set_desc "Thiếu mảnh docs/checklist/<ID>.md, hoặc PR sửa bảng tổng sinh tự động"; exit 1; }
           set_desc "Checklist đạt"
 
       - name: Status kết quả

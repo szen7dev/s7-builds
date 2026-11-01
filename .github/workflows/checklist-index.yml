@@ -1,0 +1,90 @@
+# Sinh lại bảng tổng checklist của s7-be sau mỗi lần gộp main (s7-be CLI-20261101-6d2aa4a6).
+#
+# Vì sao: checklist tổng quan tách thành mảnh `docs/checklist/<ID>.md` (mỗi yêu cầu một tệp) để hai PR song song
+# không còn xung đột ở cùng một tệp. `docs/CHECKLIST-TONG-QUAN.md` thành tệp SINH TỰ ĐỘNG — PR không được sửa nó
+# (`check-cli-checklist.mjs --require-change` chặn), nên phải có MỘT chỗ sinh lại sau khi gộp: chính là workflow này.
+# Chạy ở repo PUBLIC này để không tốn phút Actions tính phí của repo private (xem README).
+#
+# Kích bởi Worker `s7-builds-relay`: push main ở s7-be đổi `docs/checklist/` hoặc `docs/CHECKLIST-TONG-QUAN.md`
+# (commit của chính bot mang dấu `[checklist-bot]` bị bỏ qua — không tự kích lại mình).
+# Chạy tay:  gh workflow run checklist-index.yml --repo szen7dev/s7-builds -f sha=<full sha main s7-be>
+#
+# ⚠️ Luôn sinh từ main MỚI NHẤT (không theo `sha` đầu vào) và chạy NỐI TIẾP (concurrency, không huỷ): hai PR gộp
+# sát nhau thì lần chạy sau sinh từ toàn bộ thư mục nên vẫn ra bảng đúng. `sha` chỉ để báo status về đúng commit.
+# ⚠️ Repo PUBLIC — không in nội dung checklist ra log (`quiet` trong ci/lib.sh).
+# Secrets: CHECKLIST_TOKEN — fine-grained PAT, CHỈ `Contents: Read and write` trên szen7dev/s7-be (đẩy commit bảng tổng);
+#          SRC_TOKEN — có sẵn, báo status về commit nguồn.
+name: checklist-index
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Full commit SHA ở s7-be (commit main vừa gộp — để báo status)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checklist-index
+  cancel-in-progress: false
+
+env:
+  SRC_REPO: szen7dev/s7-be
+  SRC_SHA: ${{ inputs.sha }}
+  RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+jobs:
+  index:
+    if: github.repository == 'szen7dev/s7-builds'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Nạp ci/lib.sh
+        run: curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: main
+          token: ${{ secrets.CHECKLIST_TOKEN }}
+          persist-credentials: false
+          show-progress: false
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+
+      - name: Sinh lại bảng tổng + đẩy lên main
+        env:
+          T: ${{ secrets.CHECKLIST_TOKEN }}
+        run: |
+          . "$RUNNER_TEMP/lib.sh"
+          H="$(printf 'x-access-token:%s' "$T" | base64 -w0)"; echo "::add-mask::$H"
+          git config user.name "s7-builds checklist bot"
+          git config user.email "s7-builds-checklist-bot@users.noreply.github.com"
+          for attempt in 1 2 3; do
+            quiet checklist-sinh node scripts/check-cli-checklist.mjs --write \
+              || { set_desc "Mảnh checklist sai khuôn — xem PR vừa gộp (node scripts/check-cli-checklist.mjs)"; exit 1; }
+            git add docs/CHECKLIST-TONG-QUAN.md docs/checklist
+            if git diff --cached --quiet; then set_desc "Bảng tổng đã khớp, không cần sinh lại"; exit 0; fi
+            git commit -q -m "docs(checklist): sinh lại bảng tổng từ docs/checklist/ [checklist-bot]"
+            if git -c http.extraheader="AUTHORIZATION: basic $H" push -q origin HEAD:main 2>/dev/null; then
+              set_desc "Đã sinh lại bảng tổng"; exit 0
+            fi
+            # main vừa nhích (PR khác gộp sát) — lấy bản mới nhất rồi sinh lại từ đầu.
+            git -c http.extraheader="AUTHORIZATION: basic $H" fetch -q --no-tags origin main
+            git reset -q --hard FETCH_HEAD
+          done
+          set_desc "Đẩy bảng tổng thất bại 3 lần (main nhích liên tục hoặc token thiếu quyền ghi)"; exit 1
+
+      - name: Status kết quả
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+        run: |
+          . "$RUNNER_TEMP/lib.sh"
+          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ"
+          status "$SRC_REPO" "$SRC_SHA" s7-builds/checklist-index "$(job_state "${{ job.status }}")" "Sinh bảng tổng lỗi" "$RUN_URL"

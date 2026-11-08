@@ -43,13 +43,25 @@ job_state() { case "$1" in success) echo success ;; cancelled) echo error ;; *) 
 #   thật bị lờ đi.
 GITLEAKS_VERSION=8.30.1
 GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+# Dự phòng khi tải bản phát hành từ github.com lỗi (2026-11-08: releases trả 504 liên tục, chặn mọi lần dựng ảnh) — image chính chủ
+# trên ghcr.io, CÙNG phiên bản, ghim theo digest (thay cho kiểm sha256 tarball).
+GITLEAKS_IMAGE=ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 gitleaks_scan() {
   local dir="$1" tgz="$RUNNER_TEMP/gitleaks.tgz" report="$LOGDIR/gitleaks.json"
-  curl -fsSL -o "$tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-  echo "$GITLEAKS_SHA256  $tgz" | sha256sum -c --quiet
-  tar -xzf "$tgz" -C "$RUNNER_TEMP" gitleaks
-  quiet gitleaks "$RUNNER_TEMP/gitleaks" dir "$dir" --redact --no-banner --no-color \
-    --report-format json --report-path "$report" --exit-code 0 || true
+  local -a gl scan_args
+  if curl -fsSL --retry 4 --retry-all-errors --retry-delay 5 -o "$tgz" \
+       "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+     && echo "$GITLEAKS_SHA256  $tgz" | sha256sum -c --quiet; then
+    tar -xzf "$tgz" -C "$RUNNER_TEMP" gitleaks
+    gl=("$RUNNER_TEMP/gitleaks"); scan_args=(dir "$dir" --report-path "$report")
+  else
+    echo "Tải gitleaks từ github.com lỗi — dùng image ghcr.io (cùng v${GITLEAKS_VERSION}, ghim digest)"
+    docker pull -q "$GITLEAKS_IMAGE" >/dev/null
+    gl=(docker run --rm -v "$(cd "$dir" && pwd):/scan:ro" -v "$LOGDIR:/out" "$GITLEAKS_IMAGE")
+    scan_args=(dir /scan --report-path /out/gitleaks.json)
+  fi
+  quiet gitleaks "${gl[@]}" "${scan_args[@]}" --redact --no-banner --no-color \
+    --report-format json --exit-code 0 || true
   local not_test='[.[] | select(.File | test("(^|/)(test|tests|__tests__|__mocks__|fixtures)/|\\.(test|spec)\\.[cm]?[jt]sx?$") | not)]'
   jq 'length' "$report" >"$RUNNER_TEMP/gitleaks-count" 2>/dev/null || echo "?" >"$RUNNER_TEMP/gitleaks-count"
   jq "$not_test | length" "$report" >"$RUNNER_TEMP/gitleaks-real" 2>/dev/null || echo "?" >"$RUNNER_TEMP/gitleaks-real"

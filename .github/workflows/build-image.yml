@@ -75,6 +75,8 @@ jobs:
           token: ${{ secrets.SRC_TOKEN }}
           persist-credentials: false
           show-progress: false
+          # be: lấy thêm commit cha để so tệp đổi (gắn tag worker — bước cuối).
+          fetch-depth: ${{ inputs.app == 'be' && 2 || 1 }}
 
       - name: Quét bí mật (gitleaks)
         run: . "$RUNNER_TEMP/lib.sh" && gitleaks_scan .
@@ -107,6 +109,29 @@ jobs:
             --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
             || { set_desc "Dựng ảnh lỗi — log mã hoá trong artifact của run"; exit 1; }
           set_desc "Đã đẩy ${{ steps.meta.outputs.tag }}"
+
+      # ⭐ 2026-11-08 (chủ dự án: "chỉ khởi động lại worker khi code worker đổi") — ảnh s7-be dùng chung cho API + worker Chat. Trước: mỗi lần
+      # gộp đều nâng tag cho cả `s7-be-zalo-worker` ⇒ worker Zalo/Telegram/Email khởi động lại, kết nối lại 1–2 phút, tin gửi lúc đó nằm chờ.
+      # Nay: commit đụng bao đóng import của worker (`scripts/worker-deps.mjs` trong s7-be) hoặc thư viện/Dockerfile/integrations ⇒ gắn THÊM
+      # tag `worker-<run>-<sha>` cho CHÍNH ảnh vừa đẩy (không dựng lại); ImageUpdater chỉ đưa tag `worker-*` vào worker (repo GitOps).
+      # Không so được (thiếu commit cha / thiếu script) ⇒ coi như có đổi — phía an toàn. Không in tên tệp (repo public).
+      - name: Gắn tag worker khi code worker đổi
+        if: inputs.app == 'be' && inputs.ref_name == 'main'
+        run: |
+          . "$RUNNER_TEMP/lib.sh"
+          AFFECTED=yes
+          if [ -f scripts/worker-deps.mjs ] && git rev-parse -q --verify HEAD~1 >/dev/null; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')
+            AFFECTED=$(node scripts/worker-deps.mjs --changed $CHANGED 2>/dev/null || echo yes)
+          fi
+          if [ "$AFFECTED" != "no" ]; then
+            WTAG="worker-${{ github.run_id }}-${SRC_SHA::7}"
+            quiet worker-tag docker buildx imagetools create -t "$IMAGE:$WTAG" "$IMAGE:${{ steps.meta.outputs.tag }}" \
+              || { set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} — gắn tag worker lỗi"; exit 1; }
+            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} + $WTAG (worker đổi)"
+          else
+            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} (worker không đổi)"
+          fi
 
       - name: Đóng gói log (mã hoá)
         if: failure()

@@ -1,10 +1,11 @@
-# Kiểm tra s7-be: gate + toàn bộ test (MongoDB replica set riêng) và luật checklist cho PR.
+# Kiểm tra s7-be: gate + toàn bộ test (MongoDB replica set riêng).
+# 2026-11-08: BỎ job `checklist` — chủ dự án chuyển ghi nhận yêu cầu sang Grow Lab (s7-be CLAUDE.md), không ép checklist git nữa.
 # Thay cho `test.yml` + `checklist.yml` cũ chạy trong repo private (≈ 4.500 phút tính phí/tuần).
 #
 # Kích bởi Worker `s7-builds-relay`: push main (đổi src/scripts/test/...) và mọi PR mở/cập nhật.
 # Chạy tay:  gh workflow run test-be.yml --repo szen7dev/s7-builds -f sha=<full sha> [-f base=main]
 #
-# Kết quả gửi về commit nguồn: status `s7-builds/test` và `s7-builds/checklist` (chỉ PR).
+# Kết quả gửi về commit nguồn: status `s7-builds/test`.
 #
 # ⚠️ Repo PUBLIC — output gate/test (đường dẫn + dòng mã private, tên collection, tên nhánh) KHÔNG
 # in ra log: xem `ci/lib.sh`. Tên file test đỏ chỉ gửi về status trên commit private. SRC_TOKEN chỉ
@@ -19,7 +20,7 @@ on:
         required: true
         type: string
       base:
-        description: "Nhánh đích của PR (để trống nếu là push) — bật kiểm checklist"
+        description: "Nhánh đích của PR (để trống nếu là push)"
         required: false
         default: ""
         type: string
@@ -161,54 +162,3 @@ jobs:
           . "$RUNNER_TEMP/lib.sh"
           [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ (có lần chạy mới hơn)"
           status "$SRC_REPO" "$SRC_SHA" s7-builds/test "$(job_state "${{ job.status }}")" "Gate/test đỏ" "$RUN_URL"
-
-  checklist:
-    if: github.repository == 'szen7dev/s7-builds' && inputs.base != ''
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Nạp ci/lib.sh
-        run: curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
-
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ inputs.sha }}
-          token: ${{ secrets.SRC_TOKEN }}
-          persist-credentials: false
-          show-progress: false
-
-      # Cần lịch sử để `git diff base...HEAD` — fetch im lặng, cùng lý do job backend.
-      - name: Lấy lịch sử + nhánh đích
-        env:
-          T: ${{ secrets.SRC_TOKEN }}
-          BASE: ${{ inputs.base }}
-        run: |
-          H="$(printf 'x-access-token:%s' "$T" | base64 -w0)"; echo "::add-mask::$H"
-          git -c http.extraheader="AUTHORIZATION: basic $H" fetch -q --no-tags --unshallow origin \
-            "+refs/heads/$BASE:refs/remotes/origin/$BASE"
-          echo "✔ đã lấy lịch sử"
-
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: '22'
-
-      - name: Kiểm checklist
-        env:
-          BASE: ${{ inputs.base }}
-        run: |
-          . "$RUNNER_TEMP/lib.sh"
-          quiet checklist-cau-truc node scripts/check-cli-checklist.mjs \
-            || { set_desc "Mảnh checklist (docs/checklist/) sai khuôn"; exit 1; }
-          quiet checklist-doi-file node scripts/check-cli-checklist.mjs --require-change="origin/$BASE" \
-            || { set_desc "Thiếu mảnh docs/checklist/<ID>.md, hoặc PR sửa bảng tổng sinh tự động"; exit 1; }
-          set_desc "Checklist đạt"
-
-      - name: Status kết quả
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
-        run: |
-          . "$RUNNER_TEMP/lib.sh"
-          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ"
-          status "$SRC_REPO" "$SRC_SHA" s7-builds/checklist "$(job_state "${{ job.status }}")" "Checklist chưa đạt" "$RUN_URL"

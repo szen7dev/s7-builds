@@ -1,0 +1,39 @@
+# Lưới an toàn khi webhook push của GitHub tới TRỄ hoặc MẤT (LOI-0018, 2026-11-09) — xem `ci/reconcile.mjs`.
+#
+# Sự cố thật: commit gộp s7-be f47b669 (09:40 UTC) mà webhook tới 11:24 ⇒ prod chạy bản cũ gần 2 giờ, phải kích tay.
+# 10 phút một lần: đỉnh main của be/fe/stt quá 10 phút mà chưa có status dựng ảnh, và có tệp của ảnh đổi kể từ lần dựng
+# trước ⇒ tự kích `build-image.yml`. Lượt webhook trễ tới sau bị `build-image.yml` (job `check`) bỏ qua như lượt trùng.
+#
+# GitHub có thể chạy lịch muộn vài phút lúc tải cao — chấp nhận được, đây là lưới phụ, đường chính vẫn là webhook.
+name: reconcile
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.repository == 'szen7dev/s7-builds'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Nạp script
+        run: |
+          B="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci"
+          mkdir -p "$RUNNER_TEMP/ci"
+          curl -fsSL -o "$RUNNER_TEMP/ci/image-paths.mjs" "$B/image-paths.mjs"
+          curl -fsSL -o "$RUNNER_TEMP/ci/reconcile.mjs" "$B/reconcile.mjs"
+      # SRC_TOKEN: đọc commit/status/compare ở repo nguồn, đặt status pending, dispatch build-image ở s7-builds (Actions RW).
+      # Log chỉ in tên ảnh + sha 7 ký tự + kết luận — không in tên tệp (repo public).
+      - name: Đối soát đỉnh main với ảnh đã dựng
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+        run: node "$RUNNER_TEMP/ci/reconcile.mjs"

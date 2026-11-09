@@ -10,6 +10,12 @@
 # `allowTags: ^main-[0-9]+-[0-9a-zA-Z]+$` + `updateStrategy: alphabetical` của ImageUpdater
 # `prod-s7-01-kustomize-apps` (repo s7-kubernetes-prod) — phía GitOps không phải sửa gì.
 #
+# ⭐ LOI-0018 (2026-11-09): GitHub gửi webhook push TRỄ 1–2 giờ ⇒ commit CŨ được dựng sau commit mới, run_id lớn hơn ⇒
+# ImageUpdater chọn ảnh cũ ⇒ prod s7-fe LÙI về ec10c7b. Từ nay: ảnh main đẩy trước với tag `sha-<run>-<sha7>`
+# (ImageUpdater bỏ qua), rồi `ci/freshness.mjs` so commit với main — CHỈ khi sau nó không còn commit nào đổi tệp của
+# ảnh mới gắn `main-…` + `latest` (và tag worker). Commit đã gắn `main-` rồi ⇒ job `check` bỏ qua lượt dựng trùng
+# (webhook trễ tới sau khi `reconcile.yml` đã dựng) — trừ khi chạy tay với `force=true`.
+#
 # Kết quả gửi ngược về commit nguồn thành status `s7-builds/image` — push main mà ảnh không ra
 # thì commit hiện ❌ chứ không im lặng như dispatch kiểu cũ. Kèm status `s7-builds/secrets` (gitleaks
 # quét cây mã, KHÔNG chặn deploy).
@@ -36,6 +42,11 @@ on:
         required: false
         default: main
         type: string
+      force:
+        description: "Dựng lại cả khi commit này đã được gắn main- (mặc định bỏ qua lượt trùng)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -46,9 +57,31 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    # Chặn fork: repo public, chỉ chạy đúng repo gốc.
+  # LOI-0018 — commit này đã có ảnh gắn `main-` (status "Đã đẩy main-…") ⇒ không dựng lại (tránh khởi động lại pod lần hai).
+  check:
     if: github.repository == 'szen7dev/s7-builds'
+    runs-on: ubuntu-24.04
+    outputs:
+      dup: ${{ steps.dup.outputs.dup }}
+    steps:
+      - id: dup
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+          SRC_REPO: szen7dev/s7-${{ inputs.app == 'stt' && 'be' || inputs.app }}
+          STATUS_CTX: ${{ inputs.app == 'stt' && 's7-builds/image-stt' || 's7-builds/image' }}
+        run: |
+          DUP=false
+          if [ "${{ inputs.ref_name }}" = main ] && [ "${{ inputs.force }}" != true ]; then
+            if gh api "repos/$SRC_REPO/commits/${{ inputs.sha }}/status?per_page=100" \
+                 --jq ".statuses[] | select(.context == \"$STATUS_CTX\" and .state == \"success\") | .description" \
+               | grep -q '^Đã đẩy main-'; then DUP=true; echo "Commit đã có ảnh main- — bỏ qua lượt dựng trùng"; fi
+          fi
+          echo "dup=$DUP" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    # Chặn fork: repo public, chỉ chạy đúng repo gốc.
+    if: github.repository == 'szen7dev/s7-builds' && needs.check.outputs.dup != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45  # stt tải sẵn mô hình Whisper ~1,6 GB vào ảnh
     env:
@@ -61,7 +94,12 @@ jobs:
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - name: Nạp ci/lib.sh
-        run: curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
+        run: |
+          B="https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci"
+          curl -fsSL -o "$RUNNER_TEMP/lib.sh" "$B/lib.sh"
+          mkdir -p "$RUNNER_TEMP/ci"
+          curl -fsSL -o "$RUNNER_TEMP/ci/image-paths.mjs" "$B/image-paths.mjs"
+          curl -fsSL -o "$RUNNER_TEMP/ci/freshness.mjs" "$B/freshness.mjs"
 
       - name: Status pending
         env:
@@ -85,6 +123,7 @@ jobs:
         run: |
           TAG="${{ inputs.ref_name }}-${{ github.run_id }}-${SRC_SHA::7}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "shatag=sha-${{ github.run_id }}-${SRC_SHA::7}" >> "$GITHUB_OUTPUT"
           echo "$TAG" > "$RUNNER_TEMP/image-tag"
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -102,13 +141,36 @@ jobs:
       - name: Dựng + đẩy ảnh
         run: |
           . "$RUNNER_TEMP/lib.sh"
-          TAGS=(-t "$IMAGE:${{ steps.meta.outputs.tag }}")
-          if [ "${{ inputs.ref_name }}" = "main" ]; then TAGS+=(-t "$IMAGE:latest"); fi
+          # main: chỉ đẩy tag `sha-…` — `main-…`/`latest` gắn ở bước "Gắn tag main-" SAU khi kiểm độ mới (LOI-0018).
+          if [ "${{ inputs.ref_name }}" = "main" ]; then TAGS=(-t "$IMAGE:${{ steps.meta.outputs.shatag }}"); else TAGS=(-t "$IMAGE:${{ steps.meta.outputs.tag }}"); fi
           quiet docker-build docker buildx build "$BUILD_CTX" --push --progress=plain "${TAGS[@]}" \
             --cache-from "type=registry,ref=$IMAGE:buildcache" \
             --cache-to "type=registry,ref=$IMAGE:buildcache,mode=max" \
             || { set_desc "Dựng ảnh lỗi — log mã hoá trong artifact của run"; exit 1; }
-          set_desc "Đã đẩy ${{ steps.meta.outputs.tag }}"
+          set_desc "Đã đẩy ${{ inputs.ref_name == 'main' && steps.meta.outputs.shatag || steps.meta.outputs.tag }}"
+
+      - name: Kiểm độ mới so với main
+        id: fresh
+        if: inputs.ref_name == 'main'
+        env:
+          GH_TOKEN: ${{ secrets.SRC_TOKEN }}
+          APP: ${{ inputs.app }}
+        run: |
+          . "$RUNNER_TEMP/lib.sh"
+          node "$RUNNER_TEMP/ci/freshness.mjs" \
+            || { set_desc "Không kiểm được độ mới — đã đẩy ${{ steps.meta.outputs.shatag }}, CHƯA gắn main-; chạy lại tay"; exit 1; }
+
+      - name: Gắn tag main- (chỉ khi là bản mới nhất)
+        if: inputs.ref_name == 'main'
+        run: |
+          . "$RUNNER_TEMP/lib.sh"
+          if [ "${{ steps.fresh.outputs.latest }}" = true ]; then
+            quiet main-tag docker buildx imagetools create -t "$IMAGE:${{ steps.meta.outputs.tag }}" -t "$IMAGE:latest" "$IMAGE:${{ steps.meta.outputs.shatag }}" \
+              || { set_desc "Gắn tag main- lỗi (ảnh ở ${{ steps.meta.outputs.shatag }})"; exit 1; }
+            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }}"
+          else
+            set_desc "Không gắn main- (${{ steps.fresh.outputs.reason }}) — main có bản mới hơn; ảnh lưu ${{ steps.meta.outputs.shatag }}"
+          fi
 
       # ⭐ 2026-11-08 (chủ dự án: "chỉ khởi động lại worker khi code worker đổi") — ảnh s7-be dùng chung cho API + worker Chat. Trước: mỗi lần
       # gộp đều nâng tag cho cả `s7-be-zalo-worker` ⇒ worker Zalo/Telegram/Email khởi động lại, kết nối lại 1–2 phút, tin gửi lúc đó nằm chờ.
@@ -116,7 +178,7 @@ jobs:
       # tag `worker-<run>-<sha>` cho CHÍNH ảnh vừa đẩy (không dựng lại); ImageUpdater chỉ đưa tag `worker-*` vào worker (repo GitOps).
       # Không so được (thiếu commit cha / thiếu script) ⇒ coi như có đổi — phía an toàn. Không in tên tệp (repo public).
       - name: Gắn tag worker khi code worker đổi
-        if: inputs.app == 'be' && inputs.ref_name == 'main'
+        if: inputs.app == 'be' && inputs.ref_name == 'main' && steps.fresh.outputs.latest == 'true'
         run: |
           . "$RUNNER_TEMP/lib.sh"
           AFFECTED=yes

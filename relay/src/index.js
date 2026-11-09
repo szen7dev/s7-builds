@@ -22,6 +22,8 @@ const BE_CHECKLIST_PATHS = ['docs/checklist/', 'docs/CHECKLIST-TONG-QUAN.md'];
 // Commit do chính bot sinh bảng tạo — bỏ qua để không tự kích lại mình (nó đổi đúng tệp nằm trong bộ lọc trên).
 const CHECKLIST_BOT_MARK = '[checklist-bot]';
 const FE_IMAGE_PATHS = ['src/', 'public/', 'index.html', 'package.json', 'package-lock.json', 'vite.config.ts', 'nginx.conf', 'Dockerfile'];
+// LOI-0018 — `ci/image-paths.mjs` (kiểm độ mới trước khi gắn tag `main-`, reconcile) giữ bản sao; `ci/test/freshness.test.mjs` so khớp.
+export const RELAY_IMAGE_PATHS = { be: BE_IMAGE_PATHS, fe: FE_IMAGE_PATHS, stt: STT_IMAGE_PATHS };
 
 const PR_ACTIONS = new Set(['opened', 'synchronize', 'reopened', 'ready_for_review']);
 

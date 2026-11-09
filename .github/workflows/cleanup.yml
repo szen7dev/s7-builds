@@ -8,7 +8,7 @@ name: cleanup
 
 on:
   workflow_run:
-    workflows: [build-image, test-be, ci-app]
+    workflows: [build-image, test-be, ci-app, reconcile]  # reconcile chạy 10 phút/lần (LOI-0018) — dọn để không tích 144 run/ngày
     types: [completed]
   schedule:
     - cron: '0 17 * * *'   # 00:00 giờ VN

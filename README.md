@@ -11,6 +11,10 @@ s7-builds: build-image (be|fe) → ghcr.io/szen7dev/s7-<app>:main-<run_id>-<sha7
            checklist-index (s7-be: sinh lại docs/CHECKLIST-TONG-QUAN.md từ docs/checklist/ sau khi gộp main)
            ──► status s7-builds/{image,test,checklist,checklist-index,ci,secrets} gửi về đúng commit nguồn
 ImageUpdater (s7-kubernetes-prod) nhận tag mới → ArgoCD rollout — phía GitOps không đổi gì.
+build-image (main) đẩy `sha-<run>-<sha7>` trước, `ci/freshness.mjs` so với main: chỉ khi sau commit không còn commit nào
+           đổi tệp của ảnh mới gắn `main-<run>-<sha7>` + `latest` (LOI-0018: webhook trễ từng làm prod LÙI bản)
+reconcile (10 phút/lần): đỉnh main quá 10 phút chưa có status dựng ảnh mà có tệp ảnh đổi ⇒ tự kích build-image
+           (webhook trễ/mất). Lượt trùng sau đó bị job `check` của build-image bỏ qua (`-f force=true` để ép dựng lại).
 cleanup: xoá run xanh ngay, run đỏ/huỷ xoá lúc 00:00 (lớp phụ — log đã không chứa mã private).
 ```
 

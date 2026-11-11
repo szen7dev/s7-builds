@@ -165,8 +165,9 @@ jobs:
         run: |
           . "$RUNNER_TEMP/lib.sh"
           # ⚠️ LOI-0019: GitHub báo job.status = cancelled cho CẢ HAI đường — bị lần chạy mới đẩy ra, VÀ
-          # bị chính CI giết vì quá giờ. Nhãn cứng "có lần chạy mới hơn" khiến người xem PR đi tìm
-          # một lần chạy không hề tồn tại, rồi chạy lại đúng cái sẽ quá giờ lần nữa. Phân biệt bằng thời gian chạy.
+          # bị chính CI giết vì quá giờ. Phân biệt bằng thời gian chạy: chạm trần ⇒ nói chắc là quá giờ.
+          # Còn lại KHÔNG khẳng định lý do (s7-be YC-0265): "có lần chạy mới hơn" là đoán — job còn bị huỷ vì
+          # người bấm huỷ, hàng đợi, hết hạn mức. Nói chắc một điều chưa kiểm đã làm mất thời gian thật khi truy PR đỏ.
           TRAN_PHUT=45   # giữ khớp với timeout-minutes của job
           if [ "${{ job.status }}" = cancelled ]; then
             batdau="$(cat "$RUNNER_TEMP/bat-dau" 2>/dev/null || echo 0)"
@@ -174,7 +175,7 @@ jobs:
             if [ "$batdau" -gt 0 ] && [ "$phut" -ge $(( TRAN_PHUT - 2 )) ]; then
               set_desc "QUÁ GIỜ: chạy $phut phút, CI tự giết ở trần $TRAN_PHUT phút — KHÔNG phải do lần chạy mới"
             else
-              set_desc "Bị huỷ (có lần chạy mới hơn)"
+              set_desc "Bị huỷ giữa chừng, chưa biết gate/test ra sao. Chạy lại để biết."
             fi
           fi
           status "$SRC_REPO" "$SRC_SHA" s7-builds/test "$(job_state "${{ job.status }}")" "Gate/test đỏ" "$RUN_URL"

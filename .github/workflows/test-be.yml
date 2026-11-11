@@ -160,5 +160,8 @@ jobs:
           GH_TOKEN: ${{ secrets.SRC_TOKEN }}
         run: |
           . "$RUNNER_TEMP/lib.sh"
-          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ (có lần chạy mới hơn)"
+          # ⚠️ KHÔNG khẳng định lý do bị huỷ (sửa 2026-11-11, s7-be YC-0265). Bản cũ ghi thẳng "có lần chạy mới
+          # hơn" — một suy đoán: job còn bị huỷ vì người bấm huỷ, vì hàng đợi, vì hết hạn mức. Nói chắc một điều
+          # chưa kiểm là đúng kiểu sai đã làm mất thời gian thật khi truy một PR đỏ.
+          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ giữa chừng, chưa biết gate/test ra sao. Chạy lại để biết."
           status "$SRC_REPO" "$SRC_SHA" s7-builds/test "$(job_state "${{ job.status }}")" "Gate/test đỏ" "$RUN_URL"

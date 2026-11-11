@@ -215,6 +215,7 @@ jobs:
           GH_TOKEN: ${{ secrets.SRC_TOKEN }}
         run: |
           . "$RUNNER_TEMP/lib.sh"
-          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ"
+          # Huỷ ⇒ `pending`, và KHÔNG đoán lý do (xem `job_state` ở ci/lib.sh).
+          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ giữa chừng, chưa biết việc dựng ảnh ra sao. Chạy lại để biết."
           status "$SRC_REPO" "$SRC_SHA" "$STATUS_CTX" "$(job_state "${{ job.status }}")" "Dựng ảnh lỗi" "$RUN_URL"
           [ -f "$RUNNER_TEMP/gitleaks-count" ] && gitleaks_status "$SRC_REPO" "$SRC_SHA" "$RUN_URL" || true

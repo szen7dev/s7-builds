@@ -46,10 +46,14 @@ jobs:
   backend:
     if: github.repository == 'szen7dev/s7-builds'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # ⚠️ LOI-0019: bộ test ~8.900 bài chạy 22–29 phút — trần 30 nằm NGAY TRÊN khoảng đó, nên một
+    # runner chạy chậm hơn thường ngày là PR bị giết giữa chừng. Giữ khớp với TRAN_PHUT ở bước cuối.
+    timeout-minutes: 45
     steps:
       - name: Nạp ci/lib.sh
-        run: curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/lib.sh" "https://raw.githubusercontent.com/${{ github.repository }}/${{ github.sha }}/ci/lib.sh"
+          date +%s > "$RUNNER_TEMP/bat-dau"   # mốc để bước cuối biết là quá giờ hay bị lần chạy mới đẩy ra
 
       - name: Status pending
         env:
@@ -160,5 +164,17 @@ jobs:
           GH_TOKEN: ${{ secrets.SRC_TOKEN }}
         run: |
           . "$RUNNER_TEMP/lib.sh"
-          [ "${{ job.status }}" = cancelled ] && set_desc "Bị huỷ (có lần chạy mới hơn)"
+          # ⚠️ LOI-0019: GitHub báo job.status = cancelled cho CẢ HAI đường — bị lần chạy mới đẩy ra, VÀ
+          # bị chính CI giết vì quá giờ. Nhãn cứng "có lần chạy mới hơn" khiến người xem PR đi tìm
+          # một lần chạy không hề tồn tại, rồi chạy lại đúng cái sẽ quá giờ lần nữa. Phân biệt bằng thời gian chạy.
+          TRAN_PHUT=45   # giữ khớp với timeout-minutes của job
+          if [ "${{ job.status }}" = cancelled ]; then
+            batdau="$(cat "$RUNNER_TEMP/bat-dau" 2>/dev/null || echo 0)"
+            phut=$(( ( $(date +%s) - batdau ) / 60 ))
+            if [ "$batdau" -gt 0 ] && [ "$phut" -ge $(( TRAN_PHUT - 2 )) ]; then
+              set_desc "QUÁ GIỜ: chạy $phut phút, CI tự giết ở trần $TRAN_PHUT phút — KHÔNG phải do lần chạy mới"
+            else
+              set_desc "Bị huỷ (có lần chạy mới hơn)"
+            fi
+          fi
           status "$SRC_REPO" "$SRC_SHA" s7-builds/test "$(job_state "${{ job.status }}")" "Gate/test đỏ" "$RUN_URL"

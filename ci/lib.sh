@@ -28,12 +28,24 @@ set_desc() { printf '%s' "$1" | cut -c1-140 >"$DESC_FILE"; }
 # status <repo> <sha> <context> <state> <mô tả mặc định> <target_url> — cần GH_TOKEN ở env của bước gọi.
 status() {
   local desc="$5"
-  [ -s "$DESC_FILE" ] && [ "$4" != pending ] && desc="$(cat "$DESC_FILE")"
+  # `pending` lúc BẮT ĐẦU dùng mô tả mặc định; `pending` lúc KẾT THÚC (job bị huỷ) cần nói rõ vì sao
+  # còn treo ⇒ cho phép `set_desc` ghi đè nếu bước gọi đã đặt mô tả.
+  [ -s "$DESC_FILE" ] && desc="$(cat "$DESC_FILE")"
   gh api "repos/$1/statuses/$2" -f state="$4" -f context="$3" -f description="$desc" -f target_url="$6" >/dev/null
 }
 
-# job_state <job.status> → in "state" cho status (success|failure|error).
-job_state() { case "$1" in success) echo success ;; cancelled) echo error ;; *) echo failure ;; esac; }
+# job_state <job.status> → in "state" cho status (success|failure|error|pending).
+#
+# ⭐ `cancelled` ⇒ `pending`, KHÔNG phải `error` (sửa 2026-11-11, s7-be YC-0265).
+#
+# Job bị huỷ KHÔNG nói gì về mã: nó bị huỷ TRƯỚC khi gate/test chạy xong. Báo `error` là khẳng định một điều
+# chưa đo — commit hiện ĐỎ y như khi phép thử thật sự hỏng, và người xem không phân biệt được hai ca.
+# Đã mất thời gian thật vì chuyện này (2026-11-11): một PR hiện đỏ "Bị huỷ", tưởng mã hỏng, truy mất nhiều phút
+# mới ra là lần chạy bị huỷ do có lượt gộp khác chen vào.
+#
+# `pending` là câu trả lời ĐÚNG: "chưa biết". Nó cũng không cho gộp nhầm như `success` giả, và lần chạy mới
+# (nếu có) sẽ ghi đè bằng kết quả thật. Không bao giờ dùng `success` cho job bị huỷ.
+job_state() { case "$1" in success) echo success ;; cancelled) echo pending ;; *) echo failure ;; esac; }
 
 # gitleaks_scan <thư mục> — quét cây mã HIỆN TẠI (không quét lịch sử), `--redact` để báo cáo không
 # chứa giá trị bí mật. Không bao giờ làm đỏ job — chỉ báo qua status riêng. Ghi ra $RUNNER_TEMP:

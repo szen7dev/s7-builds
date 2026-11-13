@@ -188,7 +188,10 @@ jobs:
           fi
           if [ "$AFFECTED" != "no" ]; then
             WTAG="worker-${{ github.run_id }}-${SRC_SHA::7}"
-            quiet worker-tag docker buildx imagetools create -t "$IMAGE:$WTAG" "$IMAGE:${{ steps.meta.outputs.tag }}" \
+            # ⭐ 2026-11-13 — gắn THÊM vào kho riêng `$IMAGE-worker` (ghcr.io/szen7dev/s7-be-worker). Hai alias ImageUpdater dùng CHUNG imageName
+            # `s7-be` ⇒ write-back chỉ giữ alias sau (worker), dòng main đứng yên (deploy BE tắc 04:29→, 5 bản chưa lên). Kho riêng ⇒ hai imageName
+            # khác nhau. Giữ tag ở kho cũ trong lúc chuyển (GitOps đổi alias sang kho mới rồi mới bỏ).
+            quiet worker-tag docker buildx imagetools create -t "$IMAGE:$WTAG" -t "$IMAGE-worker:$WTAG" "$IMAGE:${{ steps.meta.outputs.tag }}" \
               || { set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} — gắn tag worker lỗi"; exit 1; }
             set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} + $WTAG (worker đổi)"
           else

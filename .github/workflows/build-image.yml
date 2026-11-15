@@ -113,8 +113,9 @@ jobs:
           token: ${{ secrets.SRC_TOKEN }}
           persist-credentials: false
           show-progress: false
-          # be: lấy thêm commit cha để so tệp đổi (gắn tag worker — bước cuối).
-          fetch-depth: ${{ inputs.app == 'be' && 2 || 1 }}
+          # be: lấy lịch sử để so tệp đổi từ bản worker đang chạy (gắn tag worker — bước cuối). 300 commit ≈ vài ngày gộp; commit gốc cũ hơn
+          # ⇒ bước đó coi như worker đổi (phía an toàn).
+          fetch-depth: ${{ inputs.app == 'be' && 300 || 1 }}
 
       - name: Quét bí mật (gitleaks)
         run: . "$RUNNER_TEMP/lib.sh" && gitleaks_scan .
@@ -177,14 +178,38 @@ jobs:
       # Nay: commit đụng bao đóng import của worker (`scripts/worker-deps.mjs` trong s7-be) hoặc thư viện/Dockerfile/integrations ⇒ gắn THÊM
       # tag `worker-<run>-<sha>` cho CHÍNH ảnh vừa đẩy (không dựng lại); ImageUpdater chỉ đưa tag `worker-*` vào worker (repo GitOps).
       # Không so được (thiếu commit cha / thiếu script) ⇒ coi như có đổi — phía an toàn. Không in tên tệp (repo public).
+      # ⭐ 2026-11-16 (sự cố thật, chủ dự án: "sửa pipeline luôn") — trước so `HEAD~1..HEAD`: chỉ bản MỚI NHẤT mới tới bước này ⇒ hai PR gộp sát
+      # nhau thì bản của PR trước bị bỏ qua và PR sau chỉ so với commit liền trước ⇒ thay đổi worker của PR trước KHÔNG BAO GIỜ tới worker
+      # (s7-be#1793 15/11: API có bản sửa, worker vẫn `c06850a` tới khi có commit kế tiếp đụng tệp worker). Nay so từ commit của tag `worker-*`
+      # MỚI NHẤT trong kho `$IMAGE-worker` (= bản worker đang chạy) tới HEAD ⇒ mọi thay đổi worker kể từ lần cập nhật worker trước đều được xét.
+      # Tra kho lỗi ⇒ quay về `HEAD~1` như cũ (không tự khởi động lại worker mỗi lần gộp); có commit gốc nhưng ngoài lịch sử đã tải ⇒ coi như đổi.
       - name: Gắn tag worker khi code worker đổi
         if: inputs.app == 'be' && inputs.ref_name == 'main' && steps.fresh.outputs.latest == 'true'
+        env:
+          REG_PAT: ${{ secrets.GITHUB_TOKEN }}
         run: |
           . "$RUNNER_TEMP/lib.sh"
+          REPO_PATH="${IMAGE#ghcr.io/}-worker"
+          BASE=""
+          RT=$(curl -fsS -u "x:$REG_PAT" "https://ghcr.io/token?scope=repository:$REPO_PATH:pull" 2>/dev/null \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).token||"")}catch{}})') || RT=""
+          if [ -n "$RT" ]; then
+            BASE=$(curl -fsS -H "Authorization: Bearer $RT" "https://ghcr.io/v2/$REPO_PATH/tags/list?n=10000" 2>/dev/null \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const w=(JSON.parse(s).tags||[]).map((t)=>t.match(/^worker-(\d+)-([0-9a-f]{7})$/)).filter(Boolean).sort((a,b)=>Number(b[1])-Number(a[1]));process.stdout.write(w[0]?w[0][2]:"")}catch{}})') || BASE=""
+          fi
           AFFECTED=yes
-          if [ -f scripts/worker-deps.mjs ] && git rev-parse -q --verify HEAD~1 >/dev/null; then
-            CHANGED=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')
-            AFFECTED=$(node scripts/worker-deps.mjs --changed $CHANGED 2>/dev/null || echo yes)
+          if [ -f scripts/worker-deps.mjs ]; then
+            if [ -n "$BASE" ]; then
+              if git rev-parse -q --verify "$BASE^{commit}" >/dev/null; then
+                CHANGED=$(git diff --name-only "$BASE" HEAD | tr '\n' ' ')
+                [ -z "$CHANGED" ] && AFFECTED=no || AFFECTED=$(node scripts/worker-deps.mjs --changed $CHANGED 2>/dev/null || echo yes)
+              fi
+              echo "so worker từ ${BASE} (tag worker mới nhất) ⇒ $AFFECTED"
+            elif git rev-parse -q --verify HEAD~1 >/dev/null; then
+              CHANGED=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')
+              AFFECTED=$(node scripts/worker-deps.mjs --changed $CHANGED 2>/dev/null || echo yes)
+              echo "không tra được tag worker — so HEAD~1 như cũ ⇒ $AFFECTED"
+            fi
           fi
           if [ "$AFFECTED" != "no" ]; then
             WTAG="worker-${{ github.run_id }}-${SRC_SHA::7}"

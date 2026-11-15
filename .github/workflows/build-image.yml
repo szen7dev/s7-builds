@@ -204,11 +204,11 @@ jobs:
                 CHANGED=$(git diff --name-only "$BASE" HEAD | tr '\n' ' ')
                 [ -z "$CHANGED" ] && AFFECTED=no || AFFECTED=$(node scripts/worker-deps.mjs --changed $CHANGED 2>/dev/null || echo yes)
               fi
-              echo "so worker từ ${BASE} (tag worker mới nhất) ⇒ $AFFECTED"
+              echo "so worker từ ${BASE} (tag worker mới nhất) ⇒ $AFFECTED"; WFROM="so từ ${BASE}"
             elif git rev-parse -q --verify HEAD~1 >/dev/null; then
               CHANGED=$(git diff --name-only HEAD~1 HEAD | tr '\n' ' ')
               AFFECTED=$(node scripts/worker-deps.mjs --changed $CHANGED 2>/dev/null || echo yes)
-              echo "không tra được tag worker — so HEAD~1 như cũ ⇒ $AFFECTED"
+              echo "không tra được tag worker — so HEAD~1 như cũ ⇒ $AFFECTED"; WFROM="so HEAD~1 — không tra được tag"
             fi
           fi
           if [ "$AFFECTED" != "no" ]; then
@@ -218,9 +218,9 @@ jobs:
             # khác nhau. Giữ tag ở kho cũ trong lúc chuyển (GitOps đổi alias sang kho mới rồi mới bỏ).
             quiet worker-tag docker buildx imagetools create -t "$IMAGE:$WTAG" -t "$IMAGE-worker:$WTAG" "$IMAGE:${{ steps.meta.outputs.tag }}" \
               || { set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} — gắn tag worker lỗi"; exit 1; }
-            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} + $WTAG (worker đổi)"
+            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} + $WTAG (worker đổi, ${WFROM:-không so được})"
           else
-            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} (worker không đổi)"
+            set_desc "Đã đẩy ${{ steps.meta.outputs.tag }} (worker không đổi, ${WFROM:-không so được})"
           fi
 
       - name: Đóng gói log (mã hoá)
